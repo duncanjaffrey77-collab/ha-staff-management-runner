@@ -1,0 +1,8 @@
+build_from:
+  amd64: ghcr.io/home-assistant/amd64-base:3.20
+
+# Pinned Alpine base for reproducibility. Bump alongside any Dockerfile
+# change that depends on a newer Alpine package version (e.g. moving
+# to a Node major version that isn't in 3.20's main repo).
+#
+# Available tags: https://github.com/home-assistant/docker-base/pkgs/container/amd64-base
