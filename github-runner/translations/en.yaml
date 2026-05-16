@@ -1,0 +1,29 @@
+configuration:
+  github_repo:
+    name: "GitHub repository"
+    description: >-
+      owner/repo — defaults to duncanjaffrey77-collab/staff-management.
+  github_runner_token:
+    name: "Runner registration token"
+    description: >-
+      Generate at GitHub repo → Settings → Actions → Runners → New
+      self-hosted runner → Linux → copy the value passed to ./config.sh
+      after --token. Expires ~1 hour after creation; regenerate if the
+      add-on container is recreated after expiry. Stored encrypted by
+      Supervisor.
+  runner_name:
+    name: "Runner name"
+    description: >-
+      Display name shown in GitHub Actions → Runners list.
+  runner_labels:
+    name: "Runner labels"
+    description: >-
+      Comma-separated labels. Workflows target these via `runs-on:`.
+      Keep `self-hosted,linux,x64` at minimum so default `runs-on`
+      values still match.
+  runner_workdir:
+    name: "Work directory"
+    description: >-
+      Persistent path for the runner's _work folder. Default
+      /data/_work persists across add-on restarts (HA mounts /data
+      to the host's add-on data volume).

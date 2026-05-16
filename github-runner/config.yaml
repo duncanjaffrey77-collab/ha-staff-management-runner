@@ -1,0 +1,23 @@
+name: "GitHub Actions Runner — staff-management"
+slug: "github-runner"
+version: "1.0.0"
+description: "Self-hosted GitHub Actions runner for the staff-management repo (CI + deploy)."
+arch:
+  - amd64
+init: false
+boot: auto
+startup: services
+host_network: false
+hassio_api: false
+options:
+  github_repo: "duncanjaffrey77-collab/staff-management"
+  github_runner_token: ""
+  runner_name: "haos-nuc"
+  runner_labels: "self-hosted,linux,x64,haos"
+  runner_workdir: "/data/_work"
+schema:
+  github_repo: str
+  github_runner_token: password
+  runner_name: str
+  runner_labels: str
+  runner_workdir: str

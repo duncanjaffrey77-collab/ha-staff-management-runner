@@ -1,0 +1,10 @@
+# Force LF line endings inside the add-on package. The image is built
+# and run on Linux — CRLF in shell scripts produces `bad interpreter`
+# errors, and YAML parsers may choke on CRLF in odd ways.
+github-runner/** text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.sh text eol=lf
+
+# The s6 service script has no extension but must be LF.
+github-runner/rootfs/etc/services.d/runner/run text eol=lf

@@ -1,0 +1,56 @@
+#!/usr/bin/with-contenv bashio
+# ==============================================================================
+# Start the GitHub Actions runner.
+#
+# Reads options from /data/options.json (populated by Supervisor from the
+# add-on's Options tab).
+#
+# First start: registers with the repo using a one-time registration token
+# pasted into the Options tab. The runner stores its long-lived credential at
+# /opt/runner/.credentials.
+#
+# Subsequent starts: if /opt/runner/.credentials exists, registration is
+# skipped — no token needed. This is what lets Stop → Start (or HA OS reboot)
+# work without a fresh token every time.
+#
+# When IS a fresh token needed?
+#   - First-ever start after install.
+#   - After an add-on Update / image rebuild (container layer is recreated,
+#     /opt/runner/.credentials is gone).
+#   - If the runner was manually removed in the GitHub UI.
+# ==============================================================================
+
+REPO=$(bashio::config 'github_repo')
+TOKEN=$(bashio::config 'github_runner_token')
+RUNNER_NAME=$(bashio::config 'runner_name')
+LABELS=$(bashio::config 'runner_labels')
+WORKDIR=$(bashio::config 'runner_workdir')
+
+mkdir -p "${WORKDIR}"
+cd /opt/runner || exit 1
+
+if [[ -f /opt/runner/.credentials ]]; then
+  bashio::log.info "Existing runner credentials found — reusing (no token required)."
+else
+  if bashio::var.is_empty "${TOKEN}"; then
+    bashio::log.fatal "First-time registration needs a runner token."
+    bashio::log.fatal "Generate at: Repo → Settings → Actions → Runners →"
+    bashio::log.fatal "New self-hosted runner → Linux. Copy the value after"
+    bashio::log.fatal "--token, paste into the Options tab, save, and restart."
+    exit 1
+  fi
+
+  bashio::log.info "Registering runner '${RUNNER_NAME}' against ${REPO}..."
+  ./config.sh \
+    --url "https://github.com/${REPO}" \
+    --token "${TOKEN}" \
+    --name "${RUNNER_NAME}" \
+    --labels "${LABELS}" \
+    --work "${WORKDIR}" \
+    --unattended \
+    --replace \
+    || bashio::exit.nok "Registration failed. Token may be expired (tokens last ~1 hour) — regenerate in the GitHub UI and try again."
+fi
+
+bashio::log.info "Starting GitHub Actions runner: ${RUNNER_NAME}"
+exec ./run.sh
