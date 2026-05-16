@@ -20,6 +20,14 @@
 #   - If the runner was manually removed in the GitHub UI.
 # ==============================================================================
 
+# The actions/runner binary refuses to start as root by default
+# ("Must not run with sudo"). This is the right default for bare-metal
+# installs, but every HA add-on container runs as root by design —
+# isolation comes from the container, not from a user account.
+# RUNNER_ALLOW_RUNASROOT=1 is the official escape hatch from the
+# actions/runner project for this exact situation.
+export RUNNER_ALLOW_RUNASROOT="1"
+
 REPO=$(bashio::config 'github_repo')
 TOKEN=$(bashio::config 'github_runner_token')
 RUNNER_NAME=$(bashio::config 'runner_name')
@@ -49,7 +57,7 @@ else
     --work "${WORKDIR}" \
     --unattended \
     --replace \
-    || bashio::exit.nok "Registration failed. Token may be expired (tokens last ~1 hour) — regenerate in the GitHub UI and try again."
+    || bashio::exit.nok "Runner registration failed — see the lines above for the actual error from config.sh. Common causes: expired token (tokens last ~1h), wrong github_repo, network blocked."
 fi
 
 bashio::log.info "Starting GitHub Actions runner: ${RUNNER_NAME}"
