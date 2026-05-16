@@ -43,13 +43,12 @@ mkdir -p "${PERSIST_BASE}" "${WORKDIR_BASE}" "${RUNNERS_DIR}"
 
 # ─── Build the canonical runners JSON array ──────────────────────────────────
 
-RUNNERS_JSON=$(bashio::config 'runners')
-
-# bashio returns either a JSON array or the literal string "null" / empty for
-# a missing/empty list. Normalise to "[]" for jq's sake.
-if [[ -z "${RUNNERS_JSON}" || "${RUNNERS_JSON}" == "null" ]]; then
-  RUNNERS_JSON="[]"
-fi
+# bashio::config returns list values as NDJSON (one element per line), not
+# as a single JSON array. `jq -s` slurps the lines into an array; `map(select(. != null))`
+# drops any null entries (which can appear if bashio emits a stray "null"
+# line for a missing/empty key). The result is always a valid JSON array,
+# possibly empty.
+RUNNERS_JSON=$(bashio::config 'runners' | jq -cs 'map(select(. != null))')
 
 RUNNER_COUNT=$(echo "${RUNNERS_JSON}" | jq 'length')
 

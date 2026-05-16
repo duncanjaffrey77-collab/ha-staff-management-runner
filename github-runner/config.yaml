@@ -1,6 +1,6 @@
 name: "GitHub Actions Runner (multi-repo)"
 slug: "github-runner"
-version: "2.0.0"
+version: "2.0.1"
 description: "Self-hosted GitHub Actions runner — one HA add-on, any number of repos."
 arch:
   - amd64
