@@ -7,27 +7,41 @@ FROM $BUILD_FROM
 # only re-pulls when the add-on version changes.
 ARG GITHUB_RUNNER_VERSION="2.319.1"
 
-# Base packages:
-#   - bash + curl + git: required by the runner self-installer + workflows
-#   - icu-libs + libstdc++: required by the .NET-based runner host binary
-#   - nodejs / npm: Node 22 satisfies package.json engines for staff-management
-#                   (actions/setup-node@v4 also works at runtime; pre-installing
-#                   keeps cold-start fast)
-#   - wrangler@4: Cloudflare CLI for `d1 migrations apply` + `opennextjs-cloudflare
-#                 deploy` on master pushes. Master-only paths reach this; the
-#                 token comes from repo secrets at workflow time.
+# Why Debian (not Alpine):
+# The actions/runner binary embeds a .NET 6 runtime built against glibc.
+# Alpine's musl libc is not ABI-compatible — even with gcompat/libc6-compat
+# shims the .NET runtime's ICU calls hit ABI mismatches at startup with
+# "Error loading shared library ld-linux-x86-64.so.2". GitHub has declined
+# to support Alpine (actions/runner#801). Switching to Debian Bookworm
+# removes the whole class of breakage at the cost of a larger base image
+# (~200MB vs Alpine ~50MB). The runner itself is ~600MB extracted, so the
+# base-size delta is noise relative to the install footprint.
 #
-# Alpine `nodejs` in the main repo tracks the LTS series; on HA base images
-# (Alpine 3.19+) that's Node 20. If Node 22 is required and the main repo
-# doesn't have it, swap to the `nodejs-current` package or add the edge/main
-# repo. The runner's own bootstrap (actions/setup-node@v4) downloads whatever
-# Node version the workflow asks for, so the system Node here is a convenience,
-# not a hard requirement.
-RUN apk add --no-cache \
-      bash curl git icu-libs libstdc++ \
-      nodejs npm \
+# Why NodeSource for Node:
+# Debian Bookworm's default is Node 18, which doesn't satisfy modern
+# package.json engines. Node 20 is current LTS through 2026; NodeSource's
+# apt repo provides clean upgrades without compiling from source.
+#
+# Why wrangler@4 baked into the image:
+# Workflows that deploy to Cloudflare (`d1 migrations apply`, `opennextjs-
+# cloudflare deploy`) call wrangler on every run. Installing it at image
+# build time avoids a ~10s `npm install -g` cold-start per workflow.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+         ca-certificates curl gnupg \
+    && mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+         | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
+    && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
+         > /etc/apt/sources.list.d/nodesource.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+         bash git \
+         libicu72 libssl3 \
+         nodejs \
     && npm install -g wrangler@4 \
-    && rm -rf /var/cache/apk/*
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/*
 
 RUN mkdir -p /opt/runner \
     && cd /opt/runner \

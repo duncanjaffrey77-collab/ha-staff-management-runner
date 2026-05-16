@@ -1,8 +1,10 @@
 build_from:
-  amd64: ghcr.io/home-assistant/amd64-base:3.20
+  amd64: ghcr.io/home-assistant/amd64-base-debian:bookworm
 
-# Pinned Alpine base for reproducibility. Bump alongside any Dockerfile
-# change that depends on a newer Alpine package version (e.g. moving
-# to a Node major version that isn't in 3.20's main repo).
+# Debian Bookworm base — required because the actions/runner binary
+# embeds a .NET 6 runtime built against glibc, which doesn't work on
+# Alpine's musl libc (actions/runner#801). See Dockerfile for the full
+# explanation.
 #
-# Available tags: https://github.com/home-assistant/docker-base/pkgs/container/amd64-base
+# Available tags: https://github.com/home-assistant/docker-base/pkgs/container/amd64-base-debian
+# Bookworm == Debian 12, current stable through ~2028.
