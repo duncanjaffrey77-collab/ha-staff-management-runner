@@ -1,89 +1,204 @@
 #!/usr/bin/with-contenv bashio
 # ==============================================================================
-# Start the GitHub Actions runner.
+# Start one or more GitHub Actions runners (v2.0.0+).
 #
-# Reads options from /data/options.json (populated by Supervisor from the
-# add-on's Options tab).
+# Config model:
+#   - The `runners:` array in /data/options.json is the canonical source.
+#     Each entry registers an independent runner against its named repo.
+#   - Legacy single-runner fields (github_repo, runner_name, ...) are honoured
+#     as a fallback when `runners:` is empty — preserves v1.x → v2.x upgrades
+#     without user intervention.
 #
-# Credential persistence model (v1.0.3+):
-#   - The actions/runner binary writes its long-lived credentials to
-#     /opt/runner/.credentials, .credentials_rsaparams, and .runner after
-#     successful first-time registration.
-#   - HA Supervisor recreates the add-on container on Stop/Start (NOT just
-#     stops/starts the same one). The /opt/runner/ writable layer is wiped.
-#     Only the /data mount survives container recreation.
-#   - So we MIRROR the three credential files to /data/runner-credentials/
-#     after first registration, and RESTORE them from there on every start
-#     before the existence check. This makes Stop/Start cycles work without
-#     a fresh registration token.
+# Per-runner layout:
+#   /opt/runner/                       template installation (built into image)
+#   /opt/runners/<name>/               per-instance installation (cp -r from template)
+#   /data/runner-credentials/<name>/   persisted credentials (survives container recreation)
+#   /data/_work/<name>/                working directory for jobs
 #
-# When IS a fresh token still needed?
-#   - First-ever start after install (no credentials yet, anywhere).
-#   - If you manually delete /data/runner-credentials/.
-#   - If the runner was manually removed in the GitHub UI (the credentials
-#     are revoked server-side; they'll fail auth on next connect).
+# Process model:
+#   Each runner runs `./run.sh` in a background subshell. The supervisor `wait`s
+#   on all of them; if any exit, the supervisor exits and s6 restarts the
+#   whole service group. Simple and correct for the single-NUC scale this
+#   add-on targets.
+#
+# When IS a fresh token needed?
+#   - First-ever start of a new runner entry (no /data/runner-credentials/<name>/).
+#   - If you manually delete /data/runner-credentials/<name>/.
+#   - If the runner was manually removed in the GitHub UI (credentials are
+#     revoked server-side; they'll fail auth on next connect).
 # ==============================================================================
 
-# The actions/runner binary refuses to start as root by default
-# ("Must not run with sudo"). This is the right default for bare-metal
-# installs, but every HA add-on container runs as root by design —
-# isolation comes from the container, not from a user account.
-# RUNNER_ALLOW_RUNASROOT=1 is the official escape hatch from the
-# actions/runner project for this exact situation.
+# actions/runner refuses to start as uid=0 by default. HA add-on containers
+# run as root by design (container is the isolation boundary). This env var
+# is the official escape hatch from the actions/runner project.
 export RUNNER_ALLOW_RUNASROOT="1"
 
-REPO=$(bashio::config 'github_repo')
-TOKEN=$(bashio::config 'github_runner_token')
-RUNNER_NAME=$(bashio::config 'runner_name')
-LABELS=$(bashio::config 'runner_labels')
-WORKDIR=$(bashio::config 'runner_workdir')
+PERSIST_BASE="/data/runner-credentials"
+RUNNERS_DIR="/opt/runners"
+RUNNER_TEMPLATE="/opt/runner"
+WORKDIR_BASE=$(bashio::config 'workdir_base')
+[[ -z "${WORKDIR_BASE}" || "${WORKDIR_BASE}" == "null" ]] && WORKDIR_BASE="/data/_work"
 
-PERSIST_DIR="/data/runner-credentials"
-mkdir -p "${WORKDIR}" "${PERSIST_DIR}"
-cd /opt/runner || exit 1
+mkdir -p "${PERSIST_BASE}" "${WORKDIR_BASE}" "${RUNNERS_DIR}"
 
-# Restore credential files from the persistent /data mirror, if present.
-# Three files together form the runner's identity:
-#   .credentials           — bearer token used to connect to GitHub
-#   .credentials_rsaparams — RSA key material for message signing
-#   .runner                — runner-side config (id, name, labels, work dir)
-# All three must move as a set, or auth fails with corrupt-credentials errors.
-if [[ -f "${PERSIST_DIR}/.credentials" && ! -f /opt/runner/.credentials ]]; then
-  cp -p "${PERSIST_DIR}/.credentials"           /opt/runner/.credentials
-  cp -p "${PERSIST_DIR}/.credentials_rsaparams" /opt/runner/.credentials_rsaparams
-  cp -p "${PERSIST_DIR}/.runner"                /opt/runner/.runner
-  bashio::log.info "Restored runner credentials from /data — no token required."
+# ─── Build the canonical runners JSON array ──────────────────────────────────
+
+RUNNERS_JSON=$(bashio::config 'runners')
+
+# bashio returns either a JSON array or the literal string "null" / empty for
+# a missing/empty list. Normalise to "[]" for jq's sake.
+if [[ -z "${RUNNERS_JSON}" || "${RUNNERS_JSON}" == "null" ]]; then
+  RUNNERS_JSON="[]"
 fi
 
-if [[ -f /opt/runner/.credentials ]]; then
-  bashio::log.info "Runner credentials present — skipping registration."
-else
-  if bashio::var.is_empty "${TOKEN}"; then
-    bashio::log.fatal "First-time registration needs a runner token."
-    bashio::log.fatal "Generate at: Repo → Settings → Actions → Runners →"
-    bashio::log.fatal "New self-hosted runner → Linux. Copy the value after"
-    bashio::log.fatal "--token, paste into the Options tab, save, and restart."
+RUNNER_COUNT=$(echo "${RUNNERS_JSON}" | jq 'length')
+
+if [[ "${RUNNER_COUNT}" == "0" ]]; then
+  # Legacy fallback: synthesise a single-element runners list from the v1.x
+  # flat option fields. Only path that needs this is "user upgraded from v1.x
+  # and hasn't touched the new `runners:` field yet".
+  LEGACY_REPO=$(bashio::config 'github_repo')
+  if bashio::var.is_empty "${LEGACY_REPO}"; then
+    bashio::log.fatal "No runners configured."
+    bashio::log.fatal "Add at least one entry to the 'runners' list in the Options tab."
+    bashio::log.fatal "Each entry needs: name, repo, labels, registration_token."
     exit 1
   fi
 
-  bashio::log.info "Registering runner '${RUNNER_NAME}' against ${REPO}..."
-  ./config.sh \
-    --url "https://github.com/${REPO}" \
-    --token "${TOKEN}" \
-    --name "${RUNNER_NAME}" \
-    --labels "${LABELS}" \
-    --work "${WORKDIR}" \
-    --unattended \
-    --replace \
-    || bashio::exit.nok "Runner registration failed — see the lines above for the actual error from config.sh. Common causes: expired token (tokens last ~1h), wrong github_repo, network blocked."
+  LEGACY_TOKEN=$(bashio::config 'github_runner_token')
+  LEGACY_NAME=$(bashio::config 'runner_name')
+  LEGACY_LABELS=$(bashio::config 'runner_labels')
+  [[ -z "${LEGACY_NAME}" || "${LEGACY_NAME}" == "null" ]] && LEGACY_NAME="haos-nuc"
+  [[ -z "${LEGACY_LABELS}" || "${LEGACY_LABELS}" == "null" ]] && LEGACY_LABELS="self-hosted,linux,x64,haos"
 
-  # Mirror the freshly-written credentials to /data so the next Stop/Start
-  # (which recreates the container) doesn't need a new token.
-  cp -p /opt/runner/.credentials           "${PERSIST_DIR}/.credentials"
-  cp -p /opt/runner/.credentials_rsaparams "${PERSIST_DIR}/.credentials_rsaparams"
-  cp -p /opt/runner/.runner                "${PERSIST_DIR}/.runner"
-  bashio::log.info "Mirrored credentials to /data for restart-safety."
+  RUNNERS_JSON=$(jq -cn \
+    --arg name   "${LEGACY_NAME}" \
+    --arg repo   "${LEGACY_REPO}" \
+    --arg labels "${LEGACY_LABELS}" \
+    --arg token  "${LEGACY_TOKEN}" \
+    '[{name: $name, repo: $repo, labels: $labels, registration_token: $token}]')
+  RUNNER_COUNT=1
+  bashio::log.info "Legacy v1.x config detected — running single runner '${LEGACY_NAME}' against ${LEGACY_REPO}."
 fi
 
-bashio::log.info "Starting GitHub Actions runner: ${RUNNER_NAME}"
-exec ./run.sh
+# ─── Migrate v1.x credentials layout to v2.x ─────────────────────────────────
+# v1.x stored credentials at /data/runner-credentials/.credentials (flat).
+# v2.x uses /data/runner-credentials/<name>/.credentials (per-runner).
+# On first v2.x start after upgrade, move the flat-layout credentials into
+# the first configured runner's slot.
+if [[ -f "${PERSIST_BASE}/.credentials" ]]; then
+  FIRST_NAME=$(echo "${RUNNERS_JSON}" | jq -r '.[0].name')
+  TARGET_DIR="${PERSIST_BASE}/${FIRST_NAME}"
+  if [[ -n "${FIRST_NAME}" && ! -f "${TARGET_DIR}/.credentials" ]]; then
+    mkdir -p "${TARGET_DIR}"
+    mv "${PERSIST_BASE}/.credentials"           "${TARGET_DIR}/.credentials"
+    mv "${PERSIST_BASE}/.credentials_rsaparams" "${TARGET_DIR}/.credentials_rsaparams" 2>/dev/null || true
+    mv "${PERSIST_BASE}/.runner"                "${TARGET_DIR}/.runner" 2>/dev/null || true
+    bashio::log.info "Migrated v1.x credentials to ${TARGET_DIR}/."
+  fi
+fi
+
+bashio::log.info "Starting ${RUNNER_COUNT} runner(s)."
+
+# ─── Per-runner startup ──────────────────────────────────────────────────────
+
+start_runner() {
+  local NAME="$1"
+  local REPO="$2"
+  local LABELS="$3"
+  local TOKEN="$4"
+
+  local INSTALL_DIR="${RUNNERS_DIR}/${NAME}"
+  local PERSIST_DIR="${PERSIST_BASE}/${NAME}"
+  local WORK_DIR="${WORKDIR_BASE}/${NAME}"
+
+  mkdir -p "${PERSIST_DIR}" "${WORK_DIR}"
+
+  # First-time setup: clone the template installation into a per-runner copy.
+  # The actions/runner binary writes per-instance state (`.credentials`,
+  # `.credentials_rsaparams`, `.runner`) into its install directory, so each
+  # runner needs its own. Disk cost: ~600MB per runner (acceptable on HAOS
+  # NUC scale).
+  if [[ ! -d "${INSTALL_DIR}" ]]; then
+    bashio::log.info "[${NAME}] Creating per-runner installation at ${INSTALL_DIR}..."
+    cp -r "${RUNNER_TEMPLATE}" "${INSTALL_DIR}"
+  fi
+
+  # Restore credentials from /data if the container layer is fresh
+  # (Stop/Start/Update recreated the container; only /data survived).
+  if [[ -f "${PERSIST_DIR}/.credentials" && ! -f "${INSTALL_DIR}/.credentials" ]]; then
+    cp -p "${PERSIST_DIR}/.credentials"           "${INSTALL_DIR}/.credentials"
+    cp -p "${PERSIST_DIR}/.credentials_rsaparams" "${INSTALL_DIR}/.credentials_rsaparams"
+    cp -p "${PERSIST_DIR}/.runner"                "${INSTALL_DIR}/.runner"
+    bashio::log.info "[${NAME}] Restored credentials from /data — no token required."
+  fi
+
+  cd "${INSTALL_DIR}" || {
+    bashio::log.error "[${NAME}] Could not cd to install dir."
+    return 1
+  }
+
+  if [[ ! -f .credentials ]]; then
+    if [[ -z "${TOKEN}" ]]; then
+      bashio::log.fatal "[${NAME}] No persisted credentials and no registration token."
+      bashio::log.fatal "[${NAME}] Generate a token at: ${REPO} → Settings → Actions →"
+      bashio::log.fatal "[${NAME}] Runners → New self-hosted runner → Linux. Paste it into"
+      bashio::log.fatal "[${NAME}] this runner entry's registration_token field."
+      return 1
+    fi
+
+    bashio::log.info "[${NAME}] Registering against ${REPO}..."
+    ./config.sh \
+      --url "https://github.com/${REPO}" \
+      --token "${TOKEN}" \
+      --name "${NAME}" \
+      --labels "${LABELS}" \
+      --work "${WORK_DIR}" \
+      --unattended \
+      --replace \
+      || {
+        bashio::log.error "[${NAME}] Registration failed. Common causes: expired token (tokens last ~1h), wrong repo, network blocked."
+        return 1
+      }
+
+    # Mirror to /data for restart-safety.
+    cp -p .credentials           "${PERSIST_DIR}/.credentials"
+    cp -p .credentials_rsaparams "${PERSIST_DIR}/.credentials_rsaparams"
+    cp -p .runner                "${PERSIST_DIR}/.runner"
+    bashio::log.info "[${NAME}] Mirrored credentials to /data."
+  else
+    bashio::log.info "[${NAME}] Credentials present — skipping registration."
+  fi
+
+  bashio::log.info "[${NAME}] Starting runner..."
+  # Each runner's run.sh long-polls GitHub for jobs; replaces this subshell.
+  exec ./run.sh
+}
+
+# ─── Spawn all runners and wait ──────────────────────────────────────────────
+
+# Use a tempfile rather than process substitution + while-read so the for-loop
+# can use `&` (which doesn't work cleanly inside `while read` pipelines).
+TMP_RUNNERS=$(mktemp)
+echo "${RUNNERS_JSON}" | jq -c '.[]' > "${TMP_RUNNERS}"
+
+while IFS= read -r runner; do
+  NAME=$(echo "${runner}" | jq -r '.name')
+  REPO=$(echo "${runner}" | jq -r '.repo')
+  LABELS=$(echo "${runner}" | jq -r '.labels')
+  TOKEN=$(echo "${runner}" | jq -r '.registration_token // ""')
+
+  if [[ -z "${NAME}" || -z "${REPO}" || -z "${LABELS}" || "${NAME}" == "null" ]]; then
+    bashio::log.error "Skipping malformed runner entry: ${runner}"
+    continue
+  fi
+
+  start_runner "${NAME}" "${REPO}" "${LABELS}" "${TOKEN}" &
+done < "${TMP_RUNNERS}"
+
+rm -f "${TMP_RUNNERS}"
+
+# Wait for ALL runners. If one dies the others keep working; we only exit
+# (and let s6 restart) once everything is down.
+wait
+bashio::log.warning "All runners have exited. Service will restart."

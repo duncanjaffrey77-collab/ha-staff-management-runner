@@ -1,19 +1,16 @@
-# Home Assistant Add-on: GitHub Actions Runner
+# Home Assistant Add-on: GitHub Actions Runner (multi-repo)
 
-A Home Assistant OS custom add-on that runs a self-hosted GitHub Actions
-runner on your HAOS machine (NUC, mini PC, server, etc.). Workflows
-that target this runner consume **zero** GitHub-hosted runner minutes —
-they execute on your hardware instead.
+A Home Assistant OS custom add-on that runs the official GitHub Actions
+runner against **any number of GitHub repositories from one HA install**.
+Workflows that target a runner registered by this add-on consume **zero**
+GitHub-hosted runner minutes — they execute on your hardware.
 
-Built for the `duncanjaffrey77-collab/staff-management` repo by default,
-but the target repo is a configurable option — point it at any repo
-where you have admin access to generate a runner registration token.
+Originally built to relieve the `staff-management` repo's CI compute
+budget; v2.0.0 generalised it into a multi-tenant tool.
 
 ## Install
 
 ### 1. Add this repository to HAOS
-
-In Home Assistant:
 
 1. **Settings → Add-ons → Add-on Store**
 2. Top-right **⋮ menu → Repositories**
@@ -21,50 +18,49 @@ In Home Assistant:
    ```
    https://github.com/duncanjaffrey77-collab/ha-staff-management-runner
    ```
-4. **Add → Close**
-5. Scroll the store — a new section **Staff Management — Self-hosted CI**
-   appears with **GitHub Actions Runner — staff-management** inside.
+4. **Add → Close**.
+5. Find **GitHub Actions Runner (multi-repo)** in the store.
 
 ### 2. Install the add-on
 
-Click the tile → **Install**. First install takes a few minutes — it
-downloads the official runner binary, Node.js, and `wrangler` into the
-add-on image.
+Click the tile → **Install**. First install pulls the Debian base image,
+Node 20, wrangler, and the actions/runner binary (~5 minutes total).
 
-### 3. Get a registration token
+### 3. Configure your first runner
 
-In the GitHub repo you want the runner to serve:
+Add-on page → **Configuration** tab. The **Runners** field is a list —
+add one entry:
 
-1. **Settings → Actions → Runners → New self-hosted runner**
-2. Pick **Linux** as the platform.
-3. On the displayed `./config.sh --url <URL> --token <TOKEN>` line, copy
-   the value after `--token`. You do **not** need to run any of the
-   commands on that page — this add-on does the equivalent.
+```yaml
+runners:
+  - name: haos-nuc-myrepo
+    repo: youruser/yourrepo
+    labels: self-hosted,linux,x64,haos
+    registration_token: <PASTE_FRESH_TOKEN>
+workdir_base: /data/_work
+```
 
-⏱️ **Tokens expire ~1 hour after creation.** If you don't use it
-promptly, regenerate it.
+To generate a token: target repo → **Settings → Actions → Runners →
+New self-hosted runner → Linux** → copy the value after `--token` on
+the `./config.sh` line. ⏱️ Tokens expire ~1 hour after creation.
 
-### 4. Configure and start
+Save → Info → **Start**.
 
-1. Add-on page → **Configuration** tab.
-2. Paste the token into **Runner registration token**.
-3. (Optional) change `github_repo`, `runner_name`, `runner_labels`,
-   `runner_workdir` if you don't want the defaults.
-4. **Save**.
-5. **Info** tab → **Start**.
-6. **Log** tab — you should see:
-   ```
-   √ Runner successfully added
-   √ Runner connection is good
-   √ Settings Saved.
-   Listening for Jobs
-   ```
-7. Verify in GitHub: **Settings → Actions → Runners** shows `haos-nuc`
-   with a green **Idle** dot.
+### 4. Verify
 
-### 5. Route workflows to it
+Log tab — look for:
+```
+[<name>] Starting runner...
+√ Connected to GitHub
+Listening for Jobs
+```
 
-Edit any workflow in your repo to use the runner's labels:
+GitHub side: target repo → **Settings → Actions → Runners** → your
+runner shows as **Idle**.
+
+### 5. Route workflows
+
+In any workflow targeting one of these runners:
 
 ```yaml
 # before
@@ -74,42 +70,80 @@ runs-on: ubuntu-latest
 runs-on: [self-hosted, linux, x64, haos]
 ```
 
-**Don't flip this until step 4 shows green.** A workflow that targets
-the runner before the runner is online will queue indefinitely (up to
-24h) before timing out — there is no automatic fallback to hosted
-runners.
+A workflow that targets `runs-on:` labels with no matching runner queues
+indefinitely (up to 24h) before timing out. There is no automatic
+fallback to hosted runners — see [staff-management's dispatcher pattern](https://github.com/duncanjaffrey77-collab/staff-management/blob/master/.github/workflows/ci.yml)
+for one approach.
 
-## Configuration options
+## Adding more runners
 
-| Option | Default | Notes |
+Same Configuration tab — click **+** on the runners list and fill in a
+new entry. Each runner needs:
+- A unique `name`
+- A `repo` (`owner/repo`) where you have admin
+- A `labels` string
+- A fresh `registration_token` (one-time, for first start only)
+
+Save → the add-on automatically picks up the new entry and registers it
+on next restart. Existing runners are untouched.
+
+## Configuration reference
+
+### `runners` (list)
+
+| Field | Type | Notes |
 |---|---|---|
-| `github_repo` | `duncanjaffrey77-collab/staff-management` | `owner/repo` — any repo where you have admin |
-| `github_runner_token` | _(required on first install)_ | Registration token. Expires ~1h after creation |
-| `runner_name` | `haos-nuc` | Display name in the GitHub Runners list |
-| `runner_labels` | `self-hosted,linux,x64,haos` | Comma-separated. Workflows match via `runs-on:` |
-| `runner_workdir` | `/data/_work` | Persistent across add-on restarts |
+| `name` | string | Unique runner name (also the directory name in `/data/runner-credentials/`) |
+| `repo` | string | `owner/repo` of the target GitHub repository |
+| `labels` | string | Comma-separated labels for `runs-on:` matching |
+| `registration_token` | password | One-time token from GitHub — only used on first start of this entry |
 
-The token is only required for **first-time registration**. After that
-the runner's long-lived credentials are mirrored to
-`/data/runner-credentials/` (persistent across container rebuilds), so
-restarts, Stop/Start cycles, and even add-on Updates all reuse them
-without needing a new token.
+### Top-level
+
+| Field | Default | Notes |
+|---|---|---|
+| `workdir_base` | `/data/_work` | Parent dir for each runner's `_work` folder |
+| `github_repo` *(legacy)* | _(empty)_ | v1.x compat only; ignored if `runners` is non-empty |
+| `github_runner_token` *(legacy)* | _(empty)_ | v1.x compat only |
+| `runner_name` *(legacy)* | `haos-nuc` | v1.x compat only |
+| `runner_labels` *(legacy)* | `self-hosted,linux,x64,haos` | v1.x compat only |
+
+The legacy fields exist so v1.x → v2.0 upgrades are seamless. New
+installs should leave them blank and use the `runners` list. Legacy
+fields will be removed in v3.0.0.
 
 ## Restart behavior
 
-| What happens | Needs a fresh token? |
+After first registration, each runner's credentials are mirrored to
+`/data/runner-credentials/<name>/` (which survives container recreation).
+
+| What happens | Fresh token? |
 |---|---|
-| HA OS reboots | No — credentials in `/data` survive |
-| You click **Restart** on the add-on | No |
-| You click **Stop** then **Start** | No |
-| You click **Update** on a new add-on version | No — `/data` survives image rebuild |
-| You uninstall + reinstall | **Yes** — uninstall wipes `/data` |
-| You manually delete the runner in GitHub UI | **Yes** — credential is invalidated server-side |
-| First-ever install | **Yes** — nothing to reuse yet |
+| HA OS reboots | No |
+| Add-on Restart / Stop+Start | No |
+| Add-on **Update** | No (image rebuilds but `/data` persists) |
+| Add-on Uninstall + Reinstall | **Yes** |
+| Manually delete the runner in GitHub UI | **Yes** for that runner |
+| Add a new runner entry | **Yes** for the new entry only |
 
-## Ongoing ops
+## v1.x → v2.0 upgrade
 
-### Updating the runner version
+Existing v1.x installs upgrade seamlessly:
+1. After the Update, the launch script reads your legacy
+   `github_repo` / `github_runner_token` / `runner_name` / `runner_labels`
+   fields if the new `runners` list is empty.
+2. Credentials at `/data/runner-credentials/.credentials` (flat v1.x
+   layout) are auto-migrated to
+   `/data/runner-credentials/<runner_name>/` on first start. No token
+   re-paste required.
+3. When you want a second runner, move the existing config from the
+   legacy fields into the new `runners` list, then add the new entry.
+   The legacy fields can be cleared at that point.
+
+The legacy fields will be removed in v3.0.0. There's no rush; v2.x will
+support both indefinitely.
+
+## Updating the runner binary version
 
 GitHub releases new runner versions every ~2 weeks
 ([changelog](https://github.com/actions/runner/releases)).
@@ -117,85 +151,61 @@ GitHub releases new runner versions every ~2 weeks
 1. Edit [github-runner/Dockerfile](github-runner/Dockerfile): bump
    `ARG GITHUB_RUNNER_VERSION="..."`.
 2. Edit [github-runner/config.yaml](github-runner/config.yaml): bump
-   `version:` (semver — e.g. `1.0.0` → `1.0.1`).
-3. Commit + push to `main`.
-4. In HA: Add-on Store → **⋮ → Reload**. The add-on tile shows an
-   **Update** button. Click it.
-5. After update, paste a fresh registration token (image rebuild wiped
-   the credential) and Start.
+   `version:` (semver).
+3. Commit + push to `main`. Tag the release for traceability.
+4. In HA: Add-on Store → **⋮ → Reload**. Click Update on the tile.
 
-Tag the release for traceability:
-```bash
-git tag v1.0.1 && git push --tags
-```
+Image rebuild wipes the `/opt/runners/<name>/` per-instance directories,
+but `/data/runner-credentials/<name>/` survives — each runner reuses its
+credentials, no fresh tokens needed.
 
-### Logs
+## Logs
 
-Settings → Add-ons → GitHub Actions Runner → **Log** tab.
-Live-tails runner output; per-job step output streams here while a
-workflow is running.
+Settings → Add-ons → this add-on → **Log** tab. Lines from each runner
+are prefixed `[<name>] ...` so you can distinguish them when multiple are
+configured.
 
-### Clean removal
+## Clean removal
 
-1. Add-on page → **Stop**.
+1. Add-on → **Stop**.
 2. **Uninstall**.
-3. GitHub UI → Settings → Actions → Runners → **⋮ → Remove** on the
-   runner entry (the add-on does NOT auto-deregister; if it did, every
-   Stop would require a fresh token to restart, which defeats the
+3. GitHub UI → each target repo → Settings → Actions → Runners →
+   **⋮ → Remove** for each runner. The add-on does NOT auto-deregister
+   on stop (Stop/Start would otherwise need fresh tokens, defeating the
    point).
 
-## Security notes
+## Security
 
-- The registration token is stored encrypted by Supervisor and never
-  appears in logs (the run script references `${TOKEN}` only).
-- The runner runs inside the add-on container, not as root on the HAOS
-  host.
-- The runner's long-lived credential is **scoped to one runner** — it
-  is not a user PAT and cannot act on your account.
-- **Any workflow that matches the runner's labels will execute on your
-  machine.** For a private single-developer repo this is fine. For a
-  public repo, configure **GitHub → Settings → Actions → "Require
-  approval for all outside collaborators"** before flipping any
-  workflow to self-hosted.
-- Don't commit the registration token to git. Don't paste it in chat
-  or screenshots. It's short-lived (~1h) but treat it as a secret.
+- Registration tokens stored encrypted by Supervisor; masked in UI;
+  never logged.
+- Each runner runs inside the add-on container, not as root on the host.
+- Each runner's credential is scoped to its single runner — not a PAT.
+- **Any workflow whose `runs-on:` matches a runner's labels will execute
+  on your machine.** Private single-developer repos: fine. Public repos:
+  configure GitHub → Settings → Actions → "Require approval for outside
+  collaborators" before pointing a public repo here.
 
 ## Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
-| Log: `Http response code: NotFound from … runner-registration` | Token expired (>1h old) or `github_repo` is wrong. Regenerate token, paste, restart. |
-| Log: `Registration failed.` | Token field empty or pasted with leading/trailing whitespace. Re-copy. |
-| Runner shows **Idle** in GitHub UI but a workflow stays queued | `runs-on:` labels in the workflow don't match `runner_labels` on the add-on. |
-| Disk filling up | `/data/_work` accumulates per-workflow checkouts. Stop add-on → use the Terminal add-on to `rm -rf /usr/share/hassio/addons/data/<slug>/_work/*` → restart. |
-| OOM during a Node build | Add `NODE_OPTIONS=--max-old-space-size=4096` to the workflow env. Check HA → Settings → System → Hardware for total RAM. |
-| `wrangler` not found | The image installs `wrangler@4` globally. `npx wrangler ...` always resolves. If a workflow `npm ci`s first, the local devDependency takes precedence — that's intended. |
+| `[<name>] Registration failed.` | Token expired (>1h) or wrong repo. Regenerate, paste, restart. |
+| One runner shows up but another doesn't | Per-runner errors are prefixed `[<name>]` in the Log tab — look for the missing one. |
+| All runners offline after Update | Image rebuild wiped `/opt/runners/`. Should auto-recover by restoring from `/data/runner-credentials/<name>/`. If it doesn't, the per-runner credentials may be missing — paste fresh tokens. |
+| Disk filling up | Each runner's `/data/_work/<name>/` accumulates. Stop add-on, clean up manually, restart. |
 
 ## Repository layout
 
 ```
 .
 ├── README.md                  ← this file
-├── CLAUDE.md                  ← context for AI assistants working in this repo
-├── repository.yaml            ← HAOS add-on repo manifest (top-level)
+├── CLAUDE.md                  ← context for AI assistants
+├── repository.yaml            ← HAOS add-on repo manifest
 └── github-runner/             ← the add-on package
     ├── config.yaml            ← metadata + options schema
-    ├── Dockerfile             ← image build (pinned runner + Node + wrangler)
+    ├── Dockerfile             ← Debian base + Node + wrangler + runner template
+    ├── build.yaml             ← base image pin
     ├── README.md              ← in-UI documentation tab
     ├── translations/en.yaml   ← Options form labels
-    └── rootfs/etc/services.d/runner/run   ← s6-overlay launch script
+    └── rootfs/etc/services.d/runner/run   ← multi-runner supervisor (must be 0755)
 ```
-
-## Contributing
-
-This is a single-author project for now, but if it turns out useful to
-others, PRs welcome. Keep changes focused on the runner add-on itself —
-this repo is not a general-purpose CI runner framework.
-
-When making changes:
-
-1. Bump `version:` in [github-runner/config.yaml](github-runner/config.yaml).
-2. If touching the launch script, verify it stays mode `0755`
-   (`git ls-files --stage` must show `100755`, not `100644` — s6-overlay
-   refuses to run non-executable service scripts).
-3. Tag the release: `git tag vX.Y.Z && git push --tags`.

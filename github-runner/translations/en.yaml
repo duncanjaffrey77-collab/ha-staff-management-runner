@@ -1,29 +1,43 @@
 configuration:
+  runners:
+    name: "Runners"
+    description: >-
+      One entry per runner. Each runner registers against its own GitHub repo
+      and runs independently. Click + to add another. The registration_token
+      field is only used on first start of that runner — once credentials are
+      written, the token is no longer needed.
+
+  workdir_base:
+    name: "Work directory base"
+    description: >-
+      Parent directory under /data where each runner's _work folder is
+      created. Default /data/_work means runner "haos-nuc" works in
+      /data/_work/haos-nuc/. Persistent across restarts and image rebuilds.
+
   github_repo:
-    name: "GitHub repository"
+    name: "(legacy) GitHub repository"
     description: >-
-      owner/repo — defaults to duncanjaffrey77-collab/staff-management.
+      Legacy v1.x field — owner/repo for a single runner. Only used when the
+      `runners` list above is empty (e.g. immediately after upgrading from
+      v1.x). To use multi-runner mode, add entries to `runners` and leave
+      this blank. Will be removed in v3.0.0.
+
   github_runner_token:
-    name: "Runner registration token"
+    name: "(legacy) Runner registration token"
     description: >-
-      Generate at GitHub repo → Settings → Actions → Runners → New
-      self-hosted runner → Linux → copy the value passed to ./config.sh
-      after --token. Expires ~1 hour after creation; regenerate if the
-      add-on container is recreated after expiry. Stored encrypted by
-      Supervisor.
+      Legacy v1.x field — registration token for the single legacy runner.
+      Only used when `runners` is empty. Tokens expire ~1 hour after
+      generation.
+
   runner_name:
-    name: "Runner name"
+    name: "(legacy) Runner name"
     description: >-
-      Display name shown in GitHub Actions → Runners list.
+      Legacy v1.x field — display name for the single legacy runner. Only
+      used when `runners` is empty.
+
   runner_labels:
-    name: "Runner labels"
+    name: "(legacy) Runner labels"
     description: >-
-      Comma-separated labels. Workflows target these via `runs-on:`.
-      Keep `self-hosted,linux,x64` at minimum so default `runs-on`
-      values still match.
-  runner_workdir:
-    name: "Work directory"
-    description: >-
-      Persistent path for the runner's _work folder. Default
-      /data/_work persists across add-on restarts (HA mounts /data
-      to the host's add-on data volume).
+      Legacy v1.x field — comma-separated labels for the single legacy
+      runner. Only used when `runners` is empty. Workflows match these via
+      `runs-on:`.

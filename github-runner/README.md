@@ -1,85 +1,99 @@
-# GitHub Actions Runner — staff-management
+# GitHub Actions Runner (multi-repo)
 
-A Home Assistant OS add-on that runs the official GitHub Actions runner
-binary against the `staff-management` repository. Workflows targeted at
-this runner consume **zero** GitHub-hosted runner minutes — they run on
-your NUC instead.
+Self-hosted GitHub Actions runner add-on for HAOS. One add-on instance
+serves any number of repos — each runner registers against its own
+repo and works independently.
 
 ## What it does
 
-- Downloads and installs the [official GitHub Actions runner](https://github.com/actions/runner)
-  binary (pinned version — see `Dockerfile` `GITHUB_RUNNER_VERSION`).
+- Downloads the [official GitHub Actions runner](https://github.com/actions/runner)
+  binary (pinned in `Dockerfile`, `GITHUB_RUNNER_VERSION`).
 - Pre-installs Node.js and `wrangler@4` so workflows don't pay cold-start
   cost on every run.
-- Registers the runner against your repo using a one-time registration
-  token you paste in the Options tab.
-- Cleanly de-registers on Stop (no "Offline" zombies in the GitHub UI).
+- For each entry in the **Runners** list, registers a runner against the
+  named repo and starts it.
+- Persists each runner's credentials to `/data/runner-credentials/<name>/`
+  so Stop/Start, HA OS reboots, and add-on Updates all reuse them — no
+  fresh registration token needed except on first install of each runner.
 
 ## Configuration
 
-| Option | Default | Notes |
-|---|---|---|
-| `github_repo` | `duncanjaffrey77-collab/staff-management` | `owner/repo`. |
-| `github_runner_token` | _(required)_ | Registration token from GitHub. **Expires ~1 hour after creation.** |
-| `runner_name` | `haos-nuc` | Shown in GitHub → Settings → Actions → Runners. |
-| `runner_labels` | `self-hosted,linux,x64,haos` | Workflows match these via `runs-on:`. |
-| `runner_workdir` | `/data/_work` | Persistent — survives add-on restart. |
+The **Runners** field is a list. Each entry is one runner:
 
-## Getting a registration token
+| Field | Notes |
+|---|---|
+| `name` | Display name in GitHub's Runners list. Must be unique within this add-on. |
+| `repo` | `owner/repo` — any repo where you have admin access |
+| `labels` | Comma-separated. Workflows match via `runs-on:`. Keep `self-hosted,linux,x64` at minimum. |
+| `registration_token` | One-time token from GitHub. Only needed on first start of this entry. |
 
-1. Open the GitHub repo → **Settings → Actions → Runners**.
-2. Click **New self-hosted runner**.
-3. Pick **Linux** as the platform.
-4. Look for the `./config.sh --url <URL> --token <TOKEN>` line — copy the
-   value after `--token`. (You do **not** need to run the commands on the
-   page; this add-on does the equivalent.)
-5. Paste it into the **Runner registration token** field on the Options
-   tab of this add-on. Save. Start the add-on.
+`workdir_base` (default `/data/_work`) — parent for each runner's job
+work directory (`/data/_work/<name>/`).
 
-The token is only used once — at registration time. After that the runner
-holds its own long-lived credential in `/opt/runner/.credentials`. The
-token is only re-needed if the add-on container is rebuilt (e.g. version
-bump) **and** the prior credentials don't survive.
+### Getting a registration token
 
-## Verifying it works
+1. Open the target repo → **Settings → Actions → Runners**.
+2. **New self-hosted runner** → Linux.
+3. Find the `./config.sh --url <URL> --token <TOKEN>` line — copy the
+   value after `--token`. (You do **not** need to run the commands on
+   the page; this add-on does the equivalent.)
+4. Paste into the runner entry's `registration_token` field. Save.
 
-1. After **Start**, open the **Log** tab. You should see
-   `√ Runner successfully added` and then `Listening for Jobs`.
-2. Open your GitHub repo → **Settings → Actions → Runners**. The runner
-   name (default `haos-nuc`) should appear with a green **Idle** dot.
-3. Trigger any workflow whose `runs-on:` matches the runner's labels.
+⏱️ **Tokens expire ~1 hour after creation.** Generate one immediately
+before pasting.
 
-## Updating the runner version
+## When IS a fresh token needed?
 
-1. Edit `github-runner/Dockerfile`: bump `GITHUB_RUNNER_VERSION`.
-2. Edit `github-runner/config.yaml`: bump `version:` (e.g. `1.0.0` → `1.0.1`).
-3. Commit + push the add-on repo. HA will offer **Update** on the add-on
-   page on the next refresh.
+| What happens | Fresh token? |
+|---|---|
+| HA OS reboots | No — `/data/runner-credentials/<name>/` survives |
+| Add-on Restart / Stop+Start | No |
+| Add-on **Update** (image rebuild) | No |
+| Add-on Uninstall + Reinstall | **Yes** — uninstall wipes `/data` |
+| You delete the runner in GitHub's UI | **Yes** for that specific runner — credentials revoked server-side |
+| You add a NEW entry to the `runners` list | **Yes** for the new entry — no credentials yet |
+
+## v1.x → v2.x upgrade
+
+If you're upgrading from v1.x:
+1. Your existing config (single runner via the legacy fields
+   `github_repo`, `github_runner_token`, `runner_name`, `runner_labels`)
+   keeps working. The launch script synthesises a single-element runners
+   list from them on every start.
+2. To add a second runner, populate the `runners` list with at least the
+   existing runner (copy its name/repo/labels — token can be blank if
+   it's the runner already registered). Then add the new entry.
+3. The launch script migrates your v1.x credentials from
+   `/data/runner-credentials/.credentials` to
+   `/data/runner-credentials/<first-runner-name>/.credentials` on first
+   v2.x start — no token re-paste required.
+4. The legacy fields will be removed in v3.0.0.
 
 ## Logs
 
-Settings → Add-ons → GitHub Actions Runner → **Log** tab. The runner's
-job logs (per-step output) stream here while a workflow is running.
+Settings → Add-ons → this add-on → **Log** tab. Lines are prefixed with
+the runner name like `[haos-nuc-foo] Starting runner...` so you can
+distinguish each runner's output.
 
 ## Security
 
-- The registration token is stored encrypted by Supervisor and masked in
-  the UI (`schema: password`). It never lands in logs (the run script
-  references `${TOKEN}` only, never echoes it).
-- The runner runs as the add-on container's user, not root on the host.
-- The runner has read-only access to the GitHub repo via its own
-  long-lived credential — it does **not** have access to your account.
-- **The runner WILL run any workflow that targets its labels.** Treat
-  the repo's `master` branch like production: anyone with push access
-  to the repo can execute arbitrary code on your NUC. For a private
-  single-developer repo this is fine; for a public repo, gate via
-  GitHub's "Require approval for first-time contributors" setting.
+- Registration tokens are masked + encrypted at rest (the `password`
+  schema type).
+- Each runner runs inside the add-on container, not as root on the host.
+- Each runner's long-lived credential is **scoped to that one runner**
+  — not a user PAT.
+- **Any workflow that matches a runner's labels will execute on your
+  machine.** For private single-developer repos this is fine. For
+  public repos, configure GitHub → Settings → Actions → "Require
+  approval for outside collaborators" before pointing a public repo at
+  this runner.
 
 ## Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
-| Log shows `Http response code: NotFound from 'POST … /actions/runner-registration'` | Token expired (>1h old) or wrong `github_repo`. Regenerate token + restart. |
-| Log shows `Runner registration failed.` | Token is empty or malformed. Re-copy from the GitHub UI. |
-| Runner appears in GitHub UI but workflow stays queued | `runs-on:` labels in the workflow don't match `runner_labels` on the add-on. |
-| Disk usage growing | Workflows leave artifacts in `/data/_work/<repo>/<repo>`. Periodically Stop add-on + `rm -rf` via Terminal add-on, or set a `cleanup` step in the workflow. |
+| `[<name>] Registration failed.` | Token expired (>1h) or wrong repo. Regenerate, paste, restart. |
+| Multiple runners but only one shows up in GitHub | Check the Log tab for per-runner errors — output is prefixed `[<name>]`. |
+| `[<name>] No persisted credentials and no registration token` | First start of a new entry needs a token. Add one and Save. |
+| Disk usage growing | Each runner's `/data/_work/<name>/` accumulates workflow artifacts. Stop add-on, clean up manually, restart. |
+| Slow rebuild after Update | First container start after Update re-creates `/opt/runners/<name>/` per entry (~600MB each). Subsequent restarts are fast. |

@@ -36,7 +36,7 @@ RUN apt-get update \
          > /etc/apt/sources.list.d/nodesource.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
-         bash git \
+         bash git jq \
          libicu72 libssl3 \
          nodejs \
     && npm install -g wrangler@4 \
@@ -55,4 +55,6 @@ COPY rootfs /
 RUN chmod -R 0755 /opt/runner \
     && chmod 0755 /etc/services.d/runner/run
 
-WORKDIR /opt/runner
+# /opt/runner/ is the template installation (read-only at runtime). The
+# launch script copies it to /opt/runners/<name>/ per configured runner on
+# first start. Don't set WORKDIR — the script does its own per-runner cd.
