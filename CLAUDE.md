@@ -155,7 +155,9 @@ both the arch list and the tarball URL need to template on
 
 ## Memory
 
-Project context worth preserving lives in
-`C:\Users\dunca\.claude\projects\C--Users-dunca-GitHub-ha-staff-management-runner\memory\`.
-Current entries explain the standalone status and the budget-driven
-motivation. Update as the project evolves.
+Project context worth preserving lives in the project-scoped Claude
+memory directory (`<your-claude-config>/projects/<project-slug>/memory/`
+on whichever machine is driving the work). Entries capture decisions
+and constraints not derivable from the code alone — the standalone
+status, the compute-budget motivation, persistence invariants, etc.
+Update as the project evolves.
