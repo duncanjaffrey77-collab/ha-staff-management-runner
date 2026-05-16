@@ -89,25 +89,23 @@ runners.
 | `runner_labels` | `self-hosted,linux,x64,haos` | Comma-separated. Workflows match via `runs-on:` |
 | `runner_workdir` | `/data/_work` | Persistent across add-on restarts |
 
-The token is only required for **first-time registration**. After that,
-the runner's long-lived credential lives at `/opt/runner/.credentials`
-inside the container, and Stop/Start cycles reuse it — no fresh token
-needed. A new token is only required when:
-
-- Installing for the first time
-- After an add-on **Update** (image rebuilds wipe the container layer)
-- After manually removing the runner in the GitHub UI
+The token is only required for **first-time registration**. After that
+the runner's long-lived credentials are mirrored to
+`/data/runner-credentials/` (persistent across container rebuilds), so
+restarts, Stop/Start cycles, and even add-on Updates all reuse them
+without needing a new token.
 
 ## Restart behavior
 
 | What happens | Needs a fresh token? |
 |---|---|
-| HA OS reboots, runner restarts automatically | No — credentials persist in the container |
-| You click **Restart** on the add-on | No — same |
-| You click **Stop** then **Start** | No — same |
-| You click **Update** on a new add-on version | **Yes** — image rebuild |
-| You uninstall + reinstall | **Yes** |
+| HA OS reboots | No — credentials in `/data` survive |
+| You click **Restart** on the add-on | No |
+| You click **Stop** then **Start** | No |
+| You click **Update** on a new add-on version | No — `/data` survives image rebuild |
+| You uninstall + reinstall | **Yes** — uninstall wipes `/data` |
 | You manually delete the runner in GitHub UI | **Yes** — credential is invalidated server-side |
+| First-ever install | **Yes** — nothing to reuse yet |
 
 ## Ongoing ops
 

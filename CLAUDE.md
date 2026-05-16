@@ -116,22 +116,34 @@ git push
 
 ## Runner credential lifecycle (important context)
 
-The launch script at [run](github-runner/rootfs/etc/services.d/runner/run)
-checks for `/opt/runner/.credentials` and skips registration if it
-exists. This means:
+**v1.0.3+:** The launch script at [run](github-runner/rootfs/etc/services.d/runner/run)
+mirrors the runner's three credential files (`.credentials`,
+`.credentials_rsaparams`, `.runner`) to `/data/runner-credentials/`
+after first-time registration, and restores them from there on every
+subsequent start. This means:
 
-- **A registration token is only needed at first install** (and after
-  image rebuilds — e.g. an `Update` click).
-- HA OS reboots, container restarts, add-on Stop/Start cycles all work
-  with **no fresh token** required.
-- The trade-off: when the user clicks **Uninstall**, the runner remains
-  registered on the GitHub side as "Offline" until manually removed.
-  This is intentional and documented in the README.
+- **A registration token is only needed at first install** — never
+  again unless the user uninstalls the add-on or manually removes the
+  runner in the GitHub UI.
+- HA OS reboots, Stop/Start, even add-on **Update** (image rebuild)
+  all work with **no fresh token** required — because `/data` persists
+  across container recreation.
+- The trade-off: when the user clicks **Uninstall**, the runner
+  remains registered on the GitHub side as "Offline" until manually
+  removed. This is intentional and documented in the README.
 
-If a future change reintroduces deregister-on-stop, you'll need to
-solve the "fresh token on every restart" problem some other way —
-e.g. persisting `.credentials` to `/data` so it survives container
-recreation. Don't do this casually; it's a meaningful UX regression.
+**Why this is in /data, not /opt:** HA Supervisor recreates the add-on
+container on Stop/Start (not just stops/starts the same one). Anything
+in the writable container layer (including `/opt/runner/`) is wiped on
+recreation. Only the `/data` mount survives. v1.0.2 incorrectly
+assumed `/opt/runner/.credentials` would persist; it doesn't.
+
+If a future change reintroduces deregister-on-stop, the persistence
+layer at `/data/runner-credentials/` becomes stale and the next start
+will succeed registration with the stale credentials but then fail to
+authenticate to GitHub (server has revoked them). Don't reintroduce
+deregister-on-stop without ALSO clearing `/data/runner-credentials/`
+in the cleanup path.
 
 ## Architecture targeting
 

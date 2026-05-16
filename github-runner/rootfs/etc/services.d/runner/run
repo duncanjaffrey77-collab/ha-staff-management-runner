@@ -5,19 +5,23 @@
 # Reads options from /data/options.json (populated by Supervisor from the
 # add-on's Options tab).
 #
-# First start: registers with the repo using a one-time registration token
-# pasted into the Options tab. The runner stores its long-lived credential at
-# /opt/runner/.credentials.
+# Credential persistence model (v1.0.3+):
+#   - The actions/runner binary writes its long-lived credentials to
+#     /opt/runner/.credentials, .credentials_rsaparams, and .runner after
+#     successful first-time registration.
+#   - HA Supervisor recreates the add-on container on Stop/Start (NOT just
+#     stops/starts the same one). The /opt/runner/ writable layer is wiped.
+#     Only the /data mount survives container recreation.
+#   - So we MIRROR the three credential files to /data/runner-credentials/
+#     after first registration, and RESTORE them from there on every start
+#     before the existence check. This makes Stop/Start cycles work without
+#     a fresh registration token.
 #
-# Subsequent starts: if /opt/runner/.credentials exists, registration is
-# skipped — no token needed. This is what lets Stop → Start (or HA OS reboot)
-# work without a fresh token every time.
-#
-# When IS a fresh token needed?
-#   - First-ever start after install.
-#   - After an add-on Update / image rebuild (container layer is recreated,
-#     /opt/runner/.credentials is gone).
-#   - If the runner was manually removed in the GitHub UI.
+# When IS a fresh token still needed?
+#   - First-ever start after install (no credentials yet, anywhere).
+#   - If you manually delete /data/runner-credentials/.
+#   - If the runner was manually removed in the GitHub UI (the credentials
+#     are revoked server-side; they'll fail auth on next connect).
 # ==============================================================================
 
 # The actions/runner binary refuses to start as root by default
@@ -34,11 +38,25 @@ RUNNER_NAME=$(bashio::config 'runner_name')
 LABELS=$(bashio::config 'runner_labels')
 WORKDIR=$(bashio::config 'runner_workdir')
 
-mkdir -p "${WORKDIR}"
+PERSIST_DIR="/data/runner-credentials"
+mkdir -p "${WORKDIR}" "${PERSIST_DIR}"
 cd /opt/runner || exit 1
 
+# Restore credential files from the persistent /data mirror, if present.
+# Three files together form the runner's identity:
+#   .credentials           — bearer token used to connect to GitHub
+#   .credentials_rsaparams — RSA key material for message signing
+#   .runner                — runner-side config (id, name, labels, work dir)
+# All three must move as a set, or auth fails with corrupt-credentials errors.
+if [[ -f "${PERSIST_DIR}/.credentials" && ! -f /opt/runner/.credentials ]]; then
+  cp -p "${PERSIST_DIR}/.credentials"           /opt/runner/.credentials
+  cp -p "${PERSIST_DIR}/.credentials_rsaparams" /opt/runner/.credentials_rsaparams
+  cp -p "${PERSIST_DIR}/.runner"                /opt/runner/.runner
+  bashio::log.info "Restored runner credentials from /data — no token required."
+fi
+
 if [[ -f /opt/runner/.credentials ]]; then
-  bashio::log.info "Existing runner credentials found — reusing (no token required)."
+  bashio::log.info "Runner credentials present — skipping registration."
 else
   if bashio::var.is_empty "${TOKEN}"; then
     bashio::log.fatal "First-time registration needs a runner token."
@@ -58,6 +76,13 @@ else
     --unattended \
     --replace \
     || bashio::exit.nok "Runner registration failed — see the lines above for the actual error from config.sh. Common causes: expired token (tokens last ~1h), wrong github_repo, network blocked."
+
+  # Mirror the freshly-written credentials to /data so the next Stop/Start
+  # (which recreates the container) doesn't need a new token.
+  cp -p /opt/runner/.credentials           "${PERSIST_DIR}/.credentials"
+  cp -p /opt/runner/.credentials_rsaparams "${PERSIST_DIR}/.credentials_rsaparams"
+  cp -p /opt/runner/.runner                "${PERSIST_DIR}/.runner"
+  bashio::log.info "Mirrored credentials to /data for restart-safety."
 fi
 
 bashio::log.info "Starting GitHub Actions runner: ${RUNNER_NAME}"
