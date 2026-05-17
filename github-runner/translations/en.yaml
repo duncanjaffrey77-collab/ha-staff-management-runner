@@ -13,31 +13,3 @@ configuration:
       Parent directory under /data where each runner's _work folder is
       created. Default /data/_work means runner "haos-nuc" works in
       /data/_work/haos-nuc/. Persistent across restarts and image rebuilds.
-
-  github_repo:
-    name: "(legacy) GitHub repository"
-    description: >-
-      Legacy v1.x field — owner/repo for a single runner. Only used when the
-      `runners` list above is empty (e.g. immediately after upgrading from
-      v1.x). To use multi-runner mode, add entries to `runners` and leave
-      this blank. Will be removed in v3.0.0.
-
-  github_runner_token:
-    name: "(legacy) Runner registration token"
-    description: >-
-      Legacy v1.x field — registration token for the single legacy runner.
-      Only used when `runners` is empty. Tokens expire ~1 hour after
-      generation.
-
-  runner_name:
-    name: "(legacy) Runner name"
-    description: >-
-      Legacy v1.x field — display name for the single legacy runner. Only
-      used when `runners` is empty.
-
-  runner_labels:
-    name: "(legacy) Runner labels"
-    description: >-
-      Legacy v1.x field — comma-separated labels for the single legacy
-      runner. Only used when `runners` is empty. Workflows match these via
-      `runs-on:`.

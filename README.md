@@ -103,14 +103,10 @@ on next restart. Existing runners are untouched.
 | Field | Default | Notes |
 |---|---|---|
 | `workdir_base` | `/data/_work` | Parent dir for each runner's `_work` folder |
-| `github_repo` *(legacy)* | _(empty)_ | v1.x compat only; ignored if `runners` is non-empty |
-| `github_runner_token` *(legacy)* | _(empty)_ | v1.x compat only |
-| `runner_name` *(legacy)* | `haos-nuc` | v1.x compat only |
-| `runner_labels` *(legacy)* | `self-hosted,linux,x64,haos` | v1.x compat only |
 
-The legacy fields exist so v1.x → v2.0 upgrades are seamless. New
-installs should leave them blank and use the `runners` list. Legacy
-fields will be removed in v3.0.0.
+(v3.0.0 dropped the legacy single-runner fields that v1.x → v2.x
+carried forward. The `runners:` list is now the only way to configure
+runners.)
 
 ## Restart behavior
 
@@ -125,23 +121,6 @@ After first registration, each runner's credentials are mirrored to
 | Add-on Uninstall + Reinstall | **Yes** |
 | Manually delete the runner in GitHub UI | **Yes** for that runner |
 | Add a new runner entry | **Yes** for the new entry only |
-
-## v1.x → v2.0 upgrade
-
-Existing v1.x installs upgrade seamlessly:
-1. After the Update, the launch script reads your legacy
-   `github_repo` / `github_runner_token` / `runner_name` / `runner_labels`
-   fields if the new `runners` list is empty.
-2. Credentials at `/data/runner-credentials/.credentials` (flat v1.x
-   layout) are auto-migrated to
-   `/data/runner-credentials/<runner_name>/` on first start. No token
-   re-paste required.
-3. When you want a second runner, move the existing config from the
-   legacy fields into the new `runners` list, then add the new entry.
-   The legacy fields can be cleared at that point.
-
-The legacy fields will be removed in v3.0.0. There's no rush; v2.x will
-support both indefinitely.
 
 ## Updating the runner binary version
 

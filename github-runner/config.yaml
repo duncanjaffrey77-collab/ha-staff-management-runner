@@ -1,6 +1,6 @@
 name: "GitHub Actions Runner (multi-repo)"
 slug: "github-runner"
-version: "2.0.1"
+version: "3.0.0"
 description: "Self-hosted GitHub Actions runner — one HA add-on, any number of repos."
 arch:
   - amd64
@@ -10,29 +10,20 @@ startup: services
 host_network: false
 hassio_api: false
 
-# ──── Options ─────────────────────────────────────────────────────────────────
+# Options:
+#   The `runners:` list is the canonical config. Each entry registers an
+#   independent runner against its named repo. Per-runner credentials persist
+#   under /data/runner-credentials/<name>/ so Stop/Start/Update cycles never
+#   need a fresh registration token after the first start.
 #
-# v2.x: the `runners:` list is the canonical config. Each entry registers an
-# independent runner against the named repo. Per-runner credentials persist
-# under /data/runner-credentials/<name>/ so Stop/Start/Update cycles never
-# need a fresh registration token after the first start.
-#
-# Legacy single-runner fields (`github_repo`, `github_runner_token`, etc.) are
-# kept for backwards-compat with v1.x installs — if `runners:` is empty and
-# `github_repo:` is set, the run script synthesises a one-element runners list
-# from them, so v1.x → v2.0 upgrades are seamless. Plan: remove the legacy
-# fields in v3.0.0 after users have had time to migrate.
+# v3.0.0 removed the legacy single-runner fields (`github_repo`,
+# `github_runner_token`, `runner_name`, `runner_labels`) that v1.x→v2.x
+# carried forward for backwards compat. The v1.x → v2.x credential migration
+# code in the launch script is retained as a no-op safety net for any
+# hypothetical v1.x → v3.0 direct upgrade.
 options:
   runners: []
   workdir_base: "/data/_work"
-
-  # Legacy single-runner fields. Used as a fallback when `runners:` is empty
-  # (i.e. on upgrade from v1.x where the user's options.json still has them).
-  # New installs should leave these blank and use `runners:` instead.
-  github_repo: ""
-  github_runner_token: ""
-  runner_name: "haos-nuc"
-  runner_labels: "self-hosted,linux,x64,haos"
 
 schema:
   runners:
@@ -41,8 +32,3 @@ schema:
       labels: str
       registration_token: password
   workdir_base: str
-
-  github_repo: str?
-  github_runner_token: password?
-  runner_name: str?
-  runner_labels: str?

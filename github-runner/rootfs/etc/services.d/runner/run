@@ -53,31 +53,10 @@ RUNNERS_JSON=$(bashio::config 'runners' | jq -cs 'map(select(. != null))')
 RUNNER_COUNT=$(echo "${RUNNERS_JSON}" | jq 'length')
 
 if [[ "${RUNNER_COUNT}" == "0" ]]; then
-  # Legacy fallback: synthesise a single-element runners list from the v1.x
-  # flat option fields. Only path that needs this is "user upgraded from v1.x
-  # and hasn't touched the new `runners:` field yet".
-  LEGACY_REPO=$(bashio::config 'github_repo')
-  if bashio::var.is_empty "${LEGACY_REPO}"; then
-    bashio::log.fatal "No runners configured."
-    bashio::log.fatal "Add at least one entry to the 'runners' list in the Options tab."
-    bashio::log.fatal "Each entry needs: name, repo, labels, registration_token."
-    exit 1
-  fi
-
-  LEGACY_TOKEN=$(bashio::config 'github_runner_token')
-  LEGACY_NAME=$(bashio::config 'runner_name')
-  LEGACY_LABELS=$(bashio::config 'runner_labels')
-  [[ -z "${LEGACY_NAME}" || "${LEGACY_NAME}" == "null" ]] && LEGACY_NAME="haos-nuc"
-  [[ -z "${LEGACY_LABELS}" || "${LEGACY_LABELS}" == "null" ]] && LEGACY_LABELS="self-hosted,linux,x64,haos"
-
-  RUNNERS_JSON=$(jq -cn \
-    --arg name   "${LEGACY_NAME}" \
-    --arg repo   "${LEGACY_REPO}" \
-    --arg labels "${LEGACY_LABELS}" \
-    --arg token  "${LEGACY_TOKEN}" \
-    '[{name: $name, repo: $repo, labels: $labels, registration_token: $token}]')
-  RUNNER_COUNT=1
-  bashio::log.info "Legacy v1.x config detected — running single runner '${LEGACY_NAME}' against ${LEGACY_REPO}."
+  bashio::log.fatal "No runners configured."
+  bashio::log.fatal "Add at least one entry to the 'runners' list in the Options tab."
+  bashio::log.fatal "Each entry needs: name, repo, labels, registration_token."
+  exit 1
 fi
 
 # ─── Migrate v1.x credentials layout to v2.x ─────────────────────────────────

@@ -125,28 +125,22 @@ The supervisor `wait`s for all runners; if any exit, the others keep
 working. If all exit, the supervisor exits and s6 restarts the whole
 service.
 
-## v1.x → v2.0 backwards compatibility
+## Historical: v1.x → v2.x → v3.0 migration
 
-The launch script accepts BOTH the v2.x `runners:` array and the v1.x
-flat fields (`github_repo`, `github_runner_token`, `runner_name`,
-`runner_labels`). Precedence:
+- v1.x was single-runner with flat options (`github_repo`,
+  `github_runner_token`, `runner_name`, `runner_labels`) and stored
+  credentials at `/data/runner-credentials/.credentials`.
+- v2.x added the `runners:` array, kept the legacy fields as a
+  back-compat shim, and migrated credentials to
+  `/data/runner-credentials/<first-runner-name>/`.
+- v3.0.0 dropped the legacy fields entirely. Only the `runners:` array
+  works now. The credential-migration block in the launch script is
+  retained as a defensive no-op for the (unlikely) v1.x → v3.0 direct
+  upgrade path.
 
-1. If `runners:` is non-empty → use it; legacy fields ignored.
-2. Else if legacy `github_repo` is set → synthesise a one-element
-   runners list from the legacy fields.
-3. Else → fatal "no runners configured".
-
-Credentials migration:
-- v1.x stored credentials at `/data/runner-credentials/.credentials` (flat).
-- v2.x uses `/data/runner-credentials/<name>/.credentials` (per-runner).
-- On first v2.0 start, if the flat-layout files exist AND there's at
-  least one configured runner, they're moved into the first runner's
-  slot (matched by name).
-
-This means a v1.x install that Updates to v2.0 without touching options
-keeps working — same runner, same repo, same credentials.
-
-The legacy fields will be removed in **v3.0.0**. There's no rush.
+If you encounter a v1.x-style options.json in the wild, bring it to
+v2.x first (which auto-migrates), then v3.0. Or just configure
+`runners:` directly and paste a fresh registration token for each.
 
 ## Architecture targeting
 
