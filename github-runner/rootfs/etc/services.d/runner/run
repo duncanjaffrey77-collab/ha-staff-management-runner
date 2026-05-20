@@ -148,9 +148,76 @@ start_runner() {
     bashio::log.info "[${NAME}] Credentials present — skipping registration."
   fi
 
-  bashio::log.info "[${NAME}] Starting runner..."
-  # Each runner's run.sh long-polls GitHub for jobs; replaces this subshell.
-  exec ./run.sh
+  # ─── Self-heal loop ─────────────────────────────────────────────────────
+  # Wraps ./run.sh so we can detect a specific class of failure (server-side
+  # registration invalidated → "registration has been deleted" or
+  # "PublicAccess … not authorized") and recover automatically without manual
+  # shell access to /data.
+  #
+  # When detected:
+  #   1. Nuke this runner's persisted credentials (/data/runner-credentials/<name>/).
+  #   2. Re-register against ${REPO} using whatever token is in HA Options.
+  #      - If the token is still valid (rare — single-use tokens are usually
+  #        already consumed by an earlier registration), this fully self-heals.
+  #      - If the token is consumed/expired, re-registration fails fast and
+  #        the subshell exits with a clear actionable error. The stale creds
+  #        are still gone, so the next restart-with-fresh-token recovers
+  #        cleanly without any manual `rm -rf` step.
+  #   3. Cap retries at MAX_HEAL_ATTEMPTS to avoid infinite loops.
+  #
+  # Non-auth exits (clean shutdown, crash, etc.) pass through as before —
+  # supervisor `wait` notices and s6 restarts the service group.
+  local MAX_HEAL_ATTEMPTS=3
+  local attempt=0
+  while :; do
+    bashio::log.info "[${NAME}] Starting runner..."
+    local LOG_TMP
+    LOG_TMP=$(mktemp)
+    # tee passes output to the container log AND captures it for pattern matching.
+    # PIPESTATUS[0] is ./run.sh's exit code (tee always returns 0 unless its
+    # tmpfile fills).
+    ./run.sh 2>&1 | tee "${LOG_TMP}"
+
+    if ! grep -qE "registration has been deleted from the server|System:PublicAccess.*not authorized" "${LOG_TMP}"; then
+      rm -f "${LOG_TMP}"
+      break  # clean exit (or non-auth failure) — let the supervisor handle it
+    fi
+    rm -f "${LOG_TMP}"
+
+    attempt=$((attempt + 1))
+    if [[ ${attempt} -gt ${MAX_HEAL_ATTEMPTS} ]]; then
+      bashio::log.error "[${NAME}] Self-heal exhausted ${MAX_HEAL_ATTEMPTS} attempts. Giving up. Paste a fresh registration_token in HA Options and restart the add-on."
+      return 1
+    fi
+
+    bashio::log.warning "[${NAME}] Stale server-side registration detected (attempt ${attempt}/${MAX_HEAL_ATTEMPTS}). Nuking local credentials and re-registering."
+    rm -f .credentials .credentials_rsaparams .runner
+    rm -rf "${PERSIST_DIR}"
+    mkdir -p "${PERSIST_DIR}"
+
+    if [[ -z "${TOKEN}" ]]; then
+      bashio::log.error "[${NAME}] Cannot self-heal: no registration_token set in HA Options. Stale credentials have been cleared; paste a fresh token and restart the add-on."
+      return 1
+    fi
+
+    bashio::log.info "[${NAME}] Re-registering against ${REPO}..."
+    if ! ./config.sh \
+      --url "https://github.com/${REPO}" \
+      --token "${TOKEN}" \
+      --name "${NAME}" \
+      --labels "${LABELS}" \
+      --work "${WORK_DIR}" \
+      --unattended \
+      --replace; then
+      bashio::log.error "[${NAME}] Re-registration failed. The token in HA Options is likely already consumed (registration tokens are single-use). Stale credentials have been cleared; paste a fresh token and restart the add-on."
+      return 1
+    fi
+
+    cp -p .credentials           "${PERSIST_DIR}/.credentials"
+    cp -p .credentials_rsaparams "${PERSIST_DIR}/.credentials_rsaparams"
+    cp -p .runner                "${PERSIST_DIR}/.runner"
+    bashio::log.info "[${NAME}] Self-heal succeeded. Mirrored fresh credentials to /data."
+  done
 }
 
 # ─── Spawn all runners and wait ──────────────────────────────────────────────
