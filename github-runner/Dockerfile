@@ -5,7 +5,7 @@ FROM $BUILD_FROM
 # is reproducible. To upgrade: check https://github.com/actions/runner/releases
 # and bump this ARG. Don't forget to bump config.yaml `version:` too — HA
 # only re-pulls when the add-on version changes.
-ARG GITHUB_RUNNER_VERSION="2.319.1"
+ARG GITHUB_RUNNER_VERSION="2.334.0"
 
 # Why Debian (not Alpine):
 # The actions/runner binary embeds a .NET 6 runtime built against glibc.
