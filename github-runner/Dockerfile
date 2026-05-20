@@ -27,11 +27,14 @@ ARG GITHUB_RUNNER_VERSION="2.334.0"
 # cloudflare deploy`) call wrangler on every run. Installing it at image
 # build time avoids a ~10s `npm install -g` cold-start per workflow.
 #
-# Why libsqlite3-0 baked into the image:
+# Why libsqlite3-0 + libsqlite3-dev baked into the image:
 # Flutter projects using `drift` (a Dart SQLite ORM) need a host libsqlite3
-# at test time — drift's native binding dlopens `libsqlite3.so.0`. Bookworm
-# minimal doesn't ship it. Q-Call's `flutter test` was hard-failing on this
-# before v3.0.3.
+# at test time. Bookworm minimal doesn't ship it. v3.0.3 added libsqlite3-0
+# but Q-Call's `flutter test` kept failing because Dart's `sqlite3` package
+# does `DynamicLibrary.open('libsqlite3.so')` — the unversioned name. The
+# `-0` package only installs `libsqlite3.so.0` (versioned); the unversioned
+# `.so` symlink ships in `libsqlite3-dev`. v3.0.5 adds `-dev`. Cost: ~1MB
+# of dev headers we don't strictly need but get bundled with the symlink.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
          ca-certificates curl gnupg \
@@ -44,7 +47,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
          bash git jq \
          libicu72 libssl3 \
-         libsqlite3-0 \
+         libsqlite3-0 libsqlite3-dev \
          nodejs \
     && npm install -g wrangler@4 \
     && apt-get clean \
