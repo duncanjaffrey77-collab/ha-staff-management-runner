@@ -17,7 +17,7 @@ own GitHub repo). Multi-tenant since v2.0.0.
 ├── CLAUDE.md                  ← this file
 ├── repository.yaml            ← HAOS add-on repo manifest (top-level)
 └── github-runner/             ← the add-on package
-    ├── Dockerfile             ← Debian Bookworm + Node 20 + wrangler + runner template
+    ├── Dockerfile             ← Debian Bookworm + Node 20 + wrangler + libsqlite3 + runner template
     ├── build.yaml             ← base image pin
     ├── README.md              ← in-UI documentation tab
     ├── config.yaml            ← metadata + multi-runner options schema
@@ -119,11 +119,94 @@ Each configured runner has three persistent paths:
    `/data`.
 3. If still no credentials → register using the entry's
    `registration_token`. Mirror credentials to `/data/runner-credentials/<name>/`.
-4. `exec ./run.sh` in the per-runner install dir.
+4. Enter the **self-heal loop** wrapping `./run.sh` (see below).
 
 The supervisor `wait`s for all runners; if any exit, the others keep
 working. If all exit, the supervisor exits and s6 restarts the whole
 service.
+
+### Self-heal loop (v3.0.2+)
+
+Each runner's `./run.sh` is wrapped in a retry loop that detects a
+specific class of failure — server-side registration invalidated —
+and recovers without manual shell access to `/data`.
+
+**Trigger patterns in `./run.sh` stdout:**
+- `registration has been deleted from the server` (GitHub's 14-day
+  inactivity sweep)
+- `System:PublicAccess … not authorized` (credentials mismatch with
+  server-side state)
+
+**On detection:**
+1. Delete local credentials and `/data/runner-credentials/<name>/`.
+2. Attempt re-registration with the `registration_token` from HA Options.
+3. Token still valid (rare — single-use) → loop back into `./run.sh`,
+   full self-heal.
+4. Token already consumed → exit cleanly with a log message pointing
+   at HA Options. The stale creds are still gone, so the next manual
+   restart-with-fresh-token recovers in **two steps** (not five).
+
+**Manual recovery flow after self-heal exits cleanly:**
+1. Generate a fresh registration token from the affected repo's
+   Settings → Actions → Runners → New self-hosted runner page.
+2. Paste into the entry's `registration_token:` in HA Options, restart
+   the add-on.
+
+Retry cap: 3 attempts per runner per service-restart, to prevent infinite
+loops on permanently bad config.
+
+**Non-auth exits** (clean shutdown, crash, etc.) pass through the loop
+unchanged — supervisor `wait` notices and s6 restarts the service group.
+
+## Known issues / sharp edges
+
+### "One random runner goes stale on every add-on restart"
+
+**Observation:** Every time the add-on container is restarted (HA
+Update, manual Restart, image rebuild after a `version:` bump), exactly
+one of the configured runners has its server-side registration silently
+invalidated. The runner connects with its restored-from-`/data`
+credentials and fails with `PublicAccess … not authorized`. Different
+runner each time; not deterministic which.
+
+Observed during the 2026-05-18 → 2026-05-20 stabilisation session
+across all three runners (haos-nuc, haos-nuc-surgical, haos-nuc-qcall).
+Self-heal (v3.0.2+) makes the symptom much less painful — failed runner
+cleans up its own creds and exits with a clear actionable error — but
+doesn't address root cause.
+
+**Hypotheses (untested):**
+1. **Parallel reconnect race.** All runners restart simultaneously and
+   reconnect to GitHub within milliseconds. GitHub may treat
+   near-simultaneous re-connects from the same install as suspicious
+   and invalidate one registration.
+2. **Ungraceful shutdown corrupting state.** When the container is
+   killed, s6 sends SIGTERM to the parent `run` script. The script is
+   blocked in `wait`, and its background subshells running `./run.sh`
+   don't receive SIGTERM directly. They die when bash exits, but
+   without a chance to flush rotated credentials. The persisted
+   `.credentials` is then stale relative to GitHub's view.
+3. **Token rotation mid-flight.** actions/runner rotates its auth
+   token internally on a schedule. If the container is killed during
+   a rotation, the on-disk credential lags the server-side state.
+
+Likely fix candidates:
+- Trap SIGTERM in the parent `run` script and forward to all
+  background subshells. Give each ~30s to terminate cleanly before
+  the container exits.
+- Add a small stagger (~5s) between starting each runner so they
+  don't reconnect in parallel.
+
+### Single-use registration tokens — recovery requires fresh tokens
+
+Registration tokens are single-use and expire in ~1h. The launch
+script consumes the token on first successful registration. If
+`./config.sh` is re-invoked (e.g. by the self-heal loop), the same
+token won't work a second time. This is GitHub's design, not the
+add-on's. Practical implication: the self-heal loop's re-registration
+step almost always fails (token already consumed); its real value is
+the credential cleanup, which makes the next manual recovery a
+2-step affair.
 
 ## Historical: v1.x → v2.x → v3.0 migration
 
@@ -137,6 +220,15 @@ service.
   works now. The credential-migration block in the launch script is
   retained as a defensive no-op for the (unlikely) v1.x → v3.0 direct
   upgrade path.
+- v3.0.1 bumped the actions/runner binary pin 2.319.1 → 2.334.0.
+  Reason: 2.327.0+ adds node24 manifest support; without it, fresh
+  installs crash on `actions/cache@v5` and similar transitive deps
+  used by `subosito/flutter-action@v2`.
+- v3.0.2 added the self-heal loop wrapping `./run.sh` — see the
+  "Self-heal loop" subsection above.
+- v3.0.3 baked `libsqlite3-0` into the runner image. Flutter projects
+  using `drift` (Dart SQLite ORM) dlopen `libsqlite3.so.0` at test
+  time; minimal Bookworm doesn't ship it.
 
 If you encounter a v1.x-style options.json in the wild, bring it to
 v2.x first (which auto-migrates), then v3.0. Or just configure

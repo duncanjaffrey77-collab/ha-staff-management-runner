@@ -227,6 +227,20 @@ start_runner() {
 TMP_RUNNERS=$(mktemp)
 echo "${RUNNERS_JSON}" | jq -c '.[]' > "${TMP_RUNNERS}"
 
+# Stagger startup (v3.0.4). Without a delay, multiple runners reconnect to
+# GitHub within milliseconds of each other on every restart. Symptom: one
+# random runner per restart has its server-side registration silently
+# invalidated and fails with `PublicAccess … not authorized` on the next
+# connect. A small gap lets each runner fully establish its session before
+# the next one starts. 5s is comfortably above the ~1s the runner takes to
+# reach `Listening for Jobs` and well below the human-visible startup
+# threshold (15s total for 3 runners).
+STAGGER_SECONDS=5
+
+# Track child PIDs so the SIGTERM/SIGINT handler can forward signals.
+CHILD_PIDS=()
+
+first=1
 while IFS= read -r runner; do
   NAME=$(echo "${runner}" | jq -r '.name')
   REPO=$(echo "${runner}" | jq -r '.repo')
@@ -238,10 +252,50 @@ while IFS= read -r runner; do
     continue
   fi
 
+  if [[ ${first} -eq 0 ]]; then
+    sleep "${STAGGER_SECONDS}"
+  fi
+  first=0
+
   start_runner "${NAME}" "${REPO}" "${LABELS}" "${TOKEN}" &
+  CHILD_PIDS+=("$!")
 done < "${TMP_RUNNERS}"
 
 rm -f "${TMP_RUNNERS}"
+
+# Graceful shutdown (v3.0.4). s6 sends SIGTERM to this script on container
+# stop. Without a trap, bash exits and its background subshells running
+# `./run.sh` die ungracefully, without flushing rotated credentials. The
+# persisted `.credentials` then lags GitHub's server-side state, and on
+# next restart the runner hits `PublicAccess … not authorized`.
+#
+# The trap forwards SIGTERM/SIGINT to all background subshells and waits
+# up to GRACEFUL_TIMEOUT seconds for them to exit cleanly. actions/runner
+# handles SIGTERM by flushing state and disconnecting cleanly from
+# GitHub; 25s is comfortably above the few-seconds disconnect time and
+# well below s6's own 30s kill-grace before SIGKILL.
+GRACEFUL_TIMEOUT=25
+
+shutdown_handler() {
+  bashio::log.info "Shutdown signal received; forwarding to ${#CHILD_PIDS[@]} runner(s) (timeout ${GRACEFUL_TIMEOUT}s)."
+  for pid in "${CHILD_PIDS[@]}"; do
+    kill -TERM "${pid}" 2>/dev/null || true
+  done
+  # Wait up to GRACEFUL_TIMEOUT for all children to exit.
+  local elapsed=0
+  while [[ ${elapsed} -lt ${GRACEFUL_TIMEOUT} ]]; do
+    local alive=0
+    for pid in "${CHILD_PIDS[@]}"; do
+      kill -0 "${pid}" 2>/dev/null && alive=$((alive + 1))
+    done
+    [[ ${alive} -eq 0 ]] && break
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  bashio::log.info "Graceful shutdown complete after ${elapsed}s."
+  exit 0
+}
+trap shutdown_handler SIGTERM SIGINT
 
 # Wait for ALL runners. If one dies the others keep working; we only exit
 # (and let s6 restart) once everything is down.
