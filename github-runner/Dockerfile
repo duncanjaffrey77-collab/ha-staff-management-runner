@@ -60,6 +60,14 @@ RUN mkdir -p /opt/runner \
     && tar xzf runner.tar.gz \
     && rm runner.tar.gz
 
+# v3.0.6 hybrid layout: /work is the per-runner work tree base
+# (ephemeral container-layer storage, NOT in /data so NOT in HAOS
+# backups). /data/cache holds SDK + dependency caches (persistent
+# across container restarts, INSIDE /data backups but small relative
+# to a full work tree). See rootfs/etc/services.d/runner/run for the
+# env-var wiring.
+RUN mkdir -p /work
+
 COPY rootfs /
 
 RUN chmod -R 0755 /opt/runner \

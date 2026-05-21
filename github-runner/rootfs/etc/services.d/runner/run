@@ -36,10 +36,33 @@ export RUNNER_ALLOW_RUNASROOT="1"
 PERSIST_BASE="/data/runner-credentials"
 RUNNERS_DIR="/opt/runners"
 RUNNER_TEMPLATE="/opt/runner"
+
+# v3.0.6: hybrid cache layout.
+#
+# Workfolder default moves from /data/_work to /work. /work is in the
+# container's writable layer — ephemeral (wiped on Stop/Start/Update) but
+# NOT in /data, so HAOS backups stay small regardless of CI traffic. The
+# trade-off (cold cache after container recreation) is mitigated by
+# redirecting SDK + dependency caches into /data/cache/ via env vars
+# below — those persist across restarts and are tiny relative to a full
+# _work directory.
+#
+# Backwards-compat: if the user's HA option is the LEGACY default literal
+# "/data/_work", treat it as "I never set this, use the new default".
+# Any non-default value is honoured as an explicit user choice.
 WORKDIR_BASE=$(bashio::config 'workdir_base')
-[[ -z "${WORKDIR_BASE}" || "${WORKDIR_BASE}" == "null" ]] && WORKDIR_BASE="/data/_work"
+if [[ -z "${WORKDIR_BASE}" || "${WORKDIR_BASE}" == "null" || "${WORKDIR_BASE}" == "/data/_work" ]]; then
+  WORKDIR_BASE="/work"
+fi
 
 mkdir -p "${PERSIST_BASE}" "${WORKDIR_BASE}" "${RUNNERS_DIR}"
+
+# Shared tool cache (RUNNER_TOOL_CACHE). subosito/flutter-action,
+# actions/setup-node, actions/setup-java, etc. install SDKs here keyed
+# by version, so this is safe to share across runners — different
+# tools/versions get their own subdirs and don't collide.
+export RUNNER_TOOL_CACHE="/data/cache/tools"
+mkdir -p "${RUNNER_TOOL_CACHE}"
 
 # ─── Build the canonical runners JSON array ──────────────────────────────────
 
@@ -146,7 +169,39 @@ start_runner() {
     bashio::log.info "[${NAME}] Mirrored credentials to /data."
   else
     bashio::log.info "[${NAME}] Credentials present — skipping registration."
+
+    # v3.0.6 migration: if the persisted .runner file's workFolder points
+    # at the legacy /data/_work/<name>/ path, rewrite it to the new
+    # WORK_DIR. Without this, runners registered pre-v3.0.6 would keep
+    # writing to /data/_work — exactly what the hybrid layout was meant
+    # to avoid. jq update + atomic mv, then mirror to /data so the change
+    # survives the next container recreation.
+    if [[ -f .runner ]]; then
+      local stored_work
+      stored_work=$(jq -r '.workFolder // ""' .runner 2>/dev/null)
+      if [[ -n "${stored_work}" && "${stored_work}" != "${WORK_DIR}" ]]; then
+        bashio::log.info "[${NAME}] Migrating workFolder ${stored_work} → ${WORK_DIR} (v3.0.6 hybrid layout)."
+        jq --arg new "${WORK_DIR}" '.workFolder = $new' .runner > .runner.tmp \
+          && mv .runner.tmp .runner \
+          && cp -p .runner "${PERSIST_DIR}/.runner"
+      fi
+    fi
   fi
+
+  # ─── Per-runner cache env vars (v3.0.6 hybrid) ──────────────────────────
+  # SDK and dependency caches stay in /data (persist across container
+  # restarts, included in HAOS backups but small) while the work tree
+  # itself is in /work (ephemeral, NOT in backups).
+  #
+  # GRADLE_USER_HOME MUST be per-runner — sharing it can deadlock when two
+  # runners build Android projects simultaneously (Gradle daemon locks).
+  # PUB_CACHE and npm_config_cache are version-keyed internally and could
+  # be shared safely, but per-runner keeps things clean and avoids any
+  # surprises if two runners end up using mismatched dep versions.
+  export PUB_CACHE="/data/cache/${NAME}/pub"
+  export GRADLE_USER_HOME="/data/cache/${NAME}/gradle"
+  export npm_config_cache="/data/cache/${NAME}/npm"
+  mkdir -p "${PUB_CACHE}" "${GRADLE_USER_HOME}" "${npm_config_cache}"
 
   # ─── Self-heal loop ─────────────────────────────────────────────────────
   # Wraps ./run.sh so we can detect a specific class of failure (server-side

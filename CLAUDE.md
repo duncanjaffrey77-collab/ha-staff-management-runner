@@ -103,14 +103,19 @@ the next checkout.
 
 ## Runner state model (important context)
 
-Each configured runner has three persistent paths:
+Each configured runner has paths in multiple layers, by design to balance
+backup size against cold-start cost:
 
-| Path | Lifetime | Purpose |
-|---|---|---|
-| `/opt/runner/` | image rebuild | Template install — read-only at runtime. Built into the Docker image. |
-| `/opt/runners/<name>/` | container layer | Per-instance install — `cp -r` from `/opt/runner/` on first start of this entry. Wiped by image rebuild. |
-| `/data/runner-credentials/<name>/` | host volume | Persisted `.credentials`, `.credentials_rsaparams`, `.runner` — survives container recreation AND image rebuild. |
-| `/data/_work/<name>/` | host volume | Workflow job working dir. Persists; can grow large. |
+| Path | Lifetime | In `/data` (HAOS backup)? | Purpose |
+|---|---|---|---|
+| `/opt/runner/` | image rebuild | no | Template install — read-only at runtime. Built into the Docker image. |
+| `/opt/runners/<name>/` | container layer | no | Per-instance install — `cp -r` from `/opt/runner/` on first start of this entry. Wiped by image rebuild. |
+| `/data/runner-credentials/<name>/` | host volume | yes | Persisted `.credentials`, `.credentials_rsaparams`, `.runner` — survives container recreation AND image rebuild. |
+| `/work/<name>/` (v3.0.6+) | container layer | **no** | Workflow job working dir — repo checkouts, `_actions`, `_temp`. **Ephemeral**: wiped on container recreation. Pre-v3.0.6 this lived at `/data/_work/<name>/` and bloated HAOS backups. |
+| `/data/cache/tools/` (v3.0.6+) | host volume | yes (small) | `RUNNER_TOOL_CACHE` — SDK installs (Flutter, Node, Java) keyed by version. Shared across runners. Persists for fast cold-restart. |
+| `/data/cache/<name>/pub/` (v3.0.6+) | host volume | yes (small) | `PUB_CACHE` — Flutter pub cache. Per-runner. |
+| `/data/cache/<name>/gradle/` (v3.0.6+) | host volume | yes (small) | `GRADLE_USER_HOME` — Android Gradle cache. Per-runner (REQUIRED — Gradle daemon locks conflict if shared). |
+| `/data/cache/<name>/npm/` (v3.0.6+) | host volume | yes (small) | `npm_config_cache` — npm install cache. Per-runner. |
 
 **Boot sequence per runner:**
 1. If `/opt/runners/<name>/` is missing → `cp -r /opt/runner /opt/runners/<name>/`.
@@ -229,6 +234,23 @@ the credential cleanup, which makes the next manual recovery a
 - v3.0.3 baked `libsqlite3-0` into the runner image. Flutter projects
   using `drift` (Dart SQLite ORM) dlopen `libsqlite3.so.0` at test
   time; minimal Bookworm doesn't ship it.
+- v3.0.5 added `libsqlite3-dev` so the unversioned `libsqlite3.so`
+  symlink exists. Dart's `sqlite3` package calls
+  `DynamicLibrary.open('libsqlite3.so')` (unversioned), not `.so.0`.
+- v3.0.6 split the runner state model into a hybrid layout to keep
+  HAOS backups small without losing warm-restart speed:
+  - Work tree base moves from `/data/_work/<name>/` to `/work/<name>/`
+    (container layer, NOT in `/data`, NOT in HAOS backups).
+  - SDK + dep caches (`RUNNER_TOOL_CACHE`, `PUB_CACHE`,
+    `GRADLE_USER_HOME`, `npm_config_cache`) redirect to
+    `/data/cache/...` so they persist across container recreations.
+  - On upgrade: the launch script auto-patches each runner's `.runner`
+    JSON to point at the new workFolder. Existing `/data/_work/` from
+    pre-v3.0.6 is left in place as an orphan — user can `rm -rf` to
+    reclaim space (~10GB in the canonical install).
+  - The `workdir_base` HA Option still honoured; the legacy default
+    value `/data/_work` is treated as "use new default" so users who
+    never explicitly set it auto-migrate.
 
 If you encounter a v1.x-style options.json in the wild, bring it to
 v2.x first (which auto-migrates), then v3.0. Or just configure
