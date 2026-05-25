@@ -307,6 +307,22 @@ while IFS= read -r runner; do
     continue
   fi
 
+  # v3.0.7 defensive validation. The name + repo values flow into filesystem
+  # paths (PERSIST_DIR, INSTALL_DIR, WORK_DIR, cache dirs) and into the
+  # config.sh CLI. Bash double-quoting handles arg-splitting, but a name
+  # containing `../` would still resolve to a path outside the intended
+  # directory tree (and `rm -rf "${PERSIST_DIR}"` in the self-heal loop
+  # would then nuke an unintended location). Reject filesystem-unsafe
+  # characters at config-load time, before any path is constructed.
+  if [[ ! "${NAME}" =~ ^[A-Za-z0-9_-]+$ ]]; then
+    bashio::log.error "Skipping runner: name '${NAME}' must match ^[A-Za-z0-9_-]+$ (filesystem-safe alphanumerics, underscore, hyphen)."
+    continue
+  fi
+  if [[ ! "${REPO}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+    bashio::log.error "Skipping runner: repo '${REPO}' must match owner/name shape (e.g. 'duncanjaffrey77-collab/staff-management')."
+    continue
+  fi
+
   if [[ ${first} -eq 0 ]]; then
     sleep "${STAGGER_SECONDS}"
   fi
